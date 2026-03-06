@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pull the Light</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { overflow: hidden; background: #080604; }
+canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+'use strict';
+
+// ── roundRect polyfill ──────────────────────────────────────────
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+    const arr = Array.isArray(r) ? r : [r,r,r,r];
+    const [tl,tr,br2,bl] = arr.map(v => Math.min(+v||0, Math.min(w,h)/2));
+    this.moveTo(x+tl, y);
+    this.lineTo(x+w-tr, y); this.quadraticCurveTo(x+w, y, x+w, y+tr);
+    this.lineTo(x+w, y+h-br2); this.quadraticCurveTo(x+w, y+h, x+w-br2, y+h);
+    this.lineTo(x+bl, y+h); this.quadraticCurveTo(x, y+h, x, y+h-bl);
+    this.lineTo(x, y+tl); this.quadraticCurveTo(x, y, x+tl, y);
+    this.closePath();
+  };
+}
+
+const C = document.getElementById('c');
+const X = C.getContext('2d');
+let W = 0, H = 0;
+
+// ── STATE ──────────────────────────────────────────────────────
+let lightOn    = false;
+let brightness = 0;
+let flickerT   = 0;
+let startFlicker = 0;
+let hintAlpha  = 1;
+let interacted = false;
+
+// ── PULL ROPE (Verlet Integration) ─────────────────────────────
+const NSEG = 22;
+let ropeAnchorX = 0;
+let nodes = [];
+let segLen = 0;
+
+function initRope() {
+  ropeAnchorX = W * 0.14;
+  const restLen = H * 0.52;
+  segLen = restLen / NSEG;
+  nodes = [];
+  for (let i = 0; i <= NSEG; i++) {
+    nodes.push({ x: ropeAnchorX, y: i * segLen,
+                 px: ropeAnchorX, py: i * segLen - 0.001,
+                 pinned: i === 0 });
+  }
+}
+
+function stepRope() {
+  const GRAV = 0.42, DAMP = 0.983;
+  for (const n of nodes) {
+    if (n.pinned) continue;
+    const vx = (n.x - n.px) * DAMP;
+    const vy = (n.y - n.py) * DAMP;
+    n.px = n.x; n.py = n.y;
+    n.x += vx;
+    n.y += vy + GRAV;
+  }
+  for (let iter = 0; iter < 30; iter++) {
+    nodes[0].x = ropeAnchorX; nodes[0].y = 0;
+    for (let i = 0; i < nodes.length - 1; i++) {
+      const a = nodes[i], b = nodes[i+1];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.hypot(dx, dy) || 1e-9;
+      const corr = (d - segLen) / d * 0.5;
+      if (!a.pinned) { a.x += dx * corr; a.y += dy * corr; }
+      if (!b.pinned) { b.x -= dx * corr; b.y -= dy * corr; }
+    }
+  }
+}
+
+// ── PENDULUM BULB ───────────────────────────────────────────────
+let pendAnchorX = 0;
+let wireLen     = 0;
+let pAngle      = 0;
+let pAngVel     = 0;
+
+function initPendulum() {
+  pendAnchorX = W * 0.54;
+  wireLen     = H * 0.41;
+  pAngle      = 0;
+  pAngVel     = 0;
+}
+
+// Top of socket (where wire meets bulb)
+function bulbAttach() {
+  return {
+    x: pendAnchorX + Math.sin(pAngle) * wireLen,
+    y: 6 + Math.cos(pAngle) * wireLen
+  };
+}
+
+function stepPendulum() {
+  if (dragTarget === 'bulb') return;
+  pAngVel += -0.0026 * Math.sin(pAngle);
+  pAngVel *= 0.9972;
+  pAngle  += pAngVel;
+  pAngle   = Math.max(-1.45, Math.min(1.45, pAngle));
+}
+
+// ── INPUT ───────────────────────────────────────────────────────
+let mx = 0, my = 0, pmx = 0, pmy = 0;
+let dragTarget  = null;
+let ropePullY0  = 0;
+let maxRopePull = 0;
+
+function hitTarget(cx, cy) {
+  const t = nodes[nodes.length - 1];
+  if (Math.hypot(t.x - cx, t.y - cy) < 42) return 'rope';
+  const b = bulbAttach();
+  if (Math.hypot(b.x - cx, b.y - cy) < 65) return 'bulb';
+  return null;
+}
+
+function pointerDown(cx, cy) {
+  pmx = mx = cx; pmy = my = cy;
+  const t = hitTarget(cx, cy);
+  if (!t) return;
+  dragTarget = t; interacted = true;
+  C.style.cursor = 'grabbing';
+  if (t === 'rope') { ropePullY0 = nodes[nodes.length-1].y; maxRopePull = 0; }
+}
+
+function pointerMove(cx, cy) {
+  pmx = mx; pmy = my; mx = cx; my = cy;
+  if (dragTarget === 'rope') {
+    const n = nodes[nodes.length - 1];
+    n.x = cx; n.y = cy;
+    n.px = cx - (cx - pmx) * 0.85;
+    n.py = cy - (cy - pmy) * 0.85;
+    maxRopePull = Math.max(maxRopePull, cy - ropePullY0);
+  }
+  if (dragTarget === 'bulb') {
+    const prev = pAngle;
+    pAngle  = Math.atan2(cx - pendAnchorX, Math.max(cy - 6, 15));
+    pAngle  = Math.max(-1.45, Math.min(1.45, pAngle));
+    pAngVel = pAngle - prev;
+  }
+  if (!dragTarget) C.style.cursor = hitTarget(cx,cy) ? 'grab' : 'default';
+}
+
+function pointerUp() {
+  if (dragTarget === 'rope' && maxRopePull > 88) {
+    lightOn = !lightOn;
+    if (lightOn) startFlicker = 55;
+  }
+  dragTarget = null;
+  C.style.cursor = hitTarget(mx,my) ? 'grab' : 'default';
+}
+
+C.addEventListener('mousedown',  e => pointerDown(e.clientX, e.clientY));
+C.addEventListener('mousemove',  e => pointerMove(e.clientX, e.clientY));
+C.addEventListener('mouseup',    () => pointerUp());
+C.addEventListener('mouseleave', () => pointerUp());
+C.addEventListener('touchstart', e => { e.preventDefault(); pointerDown(e.touches[0].clientX, e.touches[0].clientY); }, {passive:false});
+C.addEventListener('touchmove',  e => { e.preventDefault(); pointerMove(e.touches[0].clientX, e.touches[0].clientY); }, {passive:false});
+C.addEventListener('touchend',   e => { e.preventDefault(); pointerUp(); }, {passive:false});
+
+// ── DRAWING ─────────────────────────────────────────────────────
+
+function drawRoom() {
+  X.fillStyle = '#0a0806';
+  X.fillRect(0, 0, W, H);
+  // Wide wood panels
+  for (let i = 0; i < W; i += 55) {
+    const wobX = Math.sin(i * 0.017) * 7;
+    X.strokeStyle = 'rgba(90,52,15,0.055)';
+    X.lineWidth = 24;
+    X.beginPath(); X.moveTo(i + wobX, 62); X.lineTo(i + wobX + 14, H); X.stroke();
+  }
+  // Fine grain
+  for (let i = 0; i < W; i += 11) {
+    X.strokeStyle = 'rgba(55,32,8,0.04)';
+    X.lineWidth = 1;
+    X.beginPath(); X.moveTo(i, 62); X.lineTo(i+3, H); X.stroke();
+  }
+  // Floor
+  X.fillStyle = '#0e0b08';
+  X.fillRect(0, H*0.88, W, H*0.12);
+  X.fillStyle = '#141008';
+  X.fillRect(0, H*0.88, W, 2);
+  // Vignette
+  const vig = X.createRadialGradient(W/2, H/2, H*0.1, W/2, H/2, H);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.83)');
+  X.fillStyle = vig;
+  X.fillRect(0, 0, W, H);
+}
+
+function drawLightEffect() {
+  if (brightness < 0.005) return;
+  const { x, y } = bulbAttach();
+  const cx = x, cy = y + 58;
+
+  let fl = startFlicker > 0
+    ? (Math.random() > 0.35 ? 1 : 0.06)
+    : 0.93 + Math.sin(flickerT*18.3)*0.035 + Math.sin(flickerT*41.7)*0.025;
+  const br = brightness * fl;
+
+  // Amber bloom
+  const bloom = X.createRadialGradient(cx, cy, 0, cx, cy, H*0.85);
+  bloom.addColorStop(0.00, `rgba(255,195,68,${0.44*br})`);
+  bloom.addColorStop(0.14, `rgba(225,138,28,${0.28*br})`);
+  bloom.addColorStop(0.45, `rgba(165,78,8,${0.11*br})`);
+  bloom.addColorStop(1.00, 'rgba(0,0,0,0)');
+  X.fillStyle = bloom; X.fillRect(0,0,W,H);
+
+  // Downward cone
+  const cw = H * 0.58 * br;
+  const cg = X.createLinearGradient(cx, cy+20, cx, H);
+  cg.addColorStop(0.0, `rgba(255,200,72,${0.22*br})`);
+  cg.addColorStop(0.6, `rgba(208,128,28,${0.08*br})`);
+  cg.addColorStop(1.0, 'rgba(0,0,0,0)');
+  X.fillStyle = cg;
+  X.beginPath();
+  X.moveTo(cx-6, cy+22); X.lineTo(cx-cw/2, H); X.lineTo(cx+cw/2, H); X.lineTo(cx+6, cy+22);
+  X.closePath(); X.fill();
+
+  // Ceiling halo
+  const ch = X.createRadialGradient(cx, 58, 0, cx, 58, W*0.44);
+  ch.addColorStop(0, `rgba(255,198,75,${0.18*br})`);
+  ch.addColorStop(1, 'rgba(0,0,0,0)');
+  X.fillStyle = ch; X.fillRect(0,0,W,125);
+}
+
+function drawCeiling() {
+  X.fillStyle = '#141210'; X.fillRect(0,0,W,60);
+  X.fillStyle = '#1c1814'; X.fillRect(0,52,W,10);
+  X.fillStyle = '#252218'; X.fillRect(0,58,W,3);
+  const sh = X.createLinearGradient(0,62,0,120);
+  sh.addColorStop(0,'rgba(0,0,0,0.62)'); sh.addColorStop(1,'rgba(0,0,0,0)');
+  X.fillStyle = sh; X.fillRect(0,62,W,58);
+
+  // Ceiling rose (medallion) for bulb wire
+  X.save();
+  X.shadowColor='rgba(0,0,0,0.5)'; X.shadowBlur=7; X.shadowOffsetY=3;
+  const rg = X.createRadialGradient(pendAnchorX-3,3,0,pendAnchorX,6,20);
+  rg.addColorStop(0,'#302c28'); rg.addColorStop(1,'#1a1712');
+  X.fillStyle = rg;
+  X.beginPath(); X.ellipse(pendAnchorX,6,18,7,0,0,Math.PI*2); X.fill();
+  X.strokeStyle='#3e3a34'; X.lineWidth=1; X.stroke();
+  X.restore();
+
+  // Rope anchor bracket
+  X.save();
+  X.fillStyle='#1e1a16';
+  X.beginPath(); X.roundRect(ropeAnchorX-10,0,20,23,[0,0,6,6]); X.fill();
+  X.strokeStyle='#2c2820'; X.lineWidth=1; X.stroke();
+  X.restore();
+}
+
+function drawRope() {
+  if (nodes.length < 2) return;
+  X.save(); X.lineCap='round'; X.lineJoin='round';
+
+  // Drop shadow
+  for (let i = 0; i < nodes.length-1; i++) {
+    const a=nodes[i], b=nodes[i+1];
+    X.strokeStyle='rgba(0,0,0,0.42)'; X.lineWidth=9;
+    X.beginPath(); X.moveTo(a.x+2,a.y+3); X.lineTo(b.x+2,b.y+3); X.stroke();
+  }
+
+  // Three braided strands
+  for (let s = 0; s < 3; s++) {
+    for (let i = 0; i < nodes.length-1; i++) {
+      const a=nodes[i], b=nodes[i+1];
+      const ta = Math.sin(i*1.4 + s*2.094)*2.2;
+      const tb = Math.sin((i+1)*1.4 + s*2.094)*2.2;
+      const L  = 15 + s*7 + Math.sin(i*0.65)*4;
+      X.strokeStyle = `hsl(28,48%,${L}%)`;
+      X.lineWidth   = s===1 ? 5.5 : 3;
+      X.beginPath(); X.moveTo(a.x+ta,a.y); X.lineTo(b.x+tb,b.y); X.stroke();
+    }
+  }
+  // Sheen
+  for (let i = 0; i < nodes.length-1; i+=2) {
+    const a=nodes[i], b=nodes[i+1];
+    X.strokeStyle='rgba(215,170,105,0.18)'; X.lineWidth=1.5;
+    X.beginPath(); X.moveTo(a.x-2,a.y); X.lineTo(b.x-2,b.y); X.stroke();
+  }
+
+  // Tassel knob
+  const t = nodes[nodes.length-1];
+  X.shadowColor='rgba(0,0,0,0.7)'; X.shadowBlur=14; X.shadowOffsetY=5;
+  const kg = X.createRadialGradient(t.x-4,t.y-4,1,t.x,t.y+3,15);
+  kg.addColorStop(0,'#a06838'); kg.addColorStop(0.55,'#724520'); kg.addColorStop(1,'#2e1508');
+  X.fillStyle=kg;
+  X.beginPath(); X.ellipse(t.x,t.y+3,12,16,0,0,Math.PI*2); X.fill();
+  X.shadowBlur=0; X.shadowOffsetY=0;
+  X.strokeStyle='rgba(0,0,0,0.5)'; X.lineWidth=1.5;
+  X.beginPath(); X.ellipse(t.x,t.y+3,12,5,0,0,Math.PI*2); X.stroke();
+
+  // Fringe
+  for (let i = 0; i < 12; i++) {
+    const ang = (i/12)*Math.PI*2;
+    const rx  = Math.cos(ang)*9;
+    const wave= Math.sin(Date.now()*0.0028 + i*0.82)*3;
+    X.strokeStyle=`hsl(28,52%,${22+(i%4)*7}%)`;
+    X.lineWidth=1.5;
+    X.beginPath();
+    X.moveTo(t.x+rx*0.5, t.y+18);
+    X.lineTo(t.x+rx+wave, t.y+32);
+    X.stroke();
+  }
+  X.restore();
+}
+
+function drawWire() {
+  const {x,y} = bulbAttach();
+  X.save(); X.lineCap='round';
+  X.strokeStyle='rgba(0,0,0,0.38)'; X.lineWidth=4;
+  X.beginPath(); X.moveTo(pendAnchorX+1.5,10); X.lineTo(x+1.5,y+2); X.stroke();
+  X.strokeStyle='#28253c'; X.lineWidth=2.5;
+  X.beginPath(); X.moveTo(pendAnchorX,10); X.lineTo(x,y); X.stroke();
+  X.strokeStyle='#38354e'; X.lineWidth=1;
+  X.beginPath(); X.moveTo(pendAnchorX,10); X.lineTo(x,y); X.stroke();
+  X.restore();
+}
+
+function drawBulb() {
+  const {x,y} = bulbAttach();
+  let fl = startFlicker > 0
+    ? (Math.random()>0.35 ? 1 : 0.05)
+    : 0.93 + Math.sin(flickerT*18.3)*0.035 + Math.sin(flickerT*41.7)*0.025;
+  const br = brightness * fl;
+
+  X.save();
+  X.translate(x, y);
+  X.rotate(-pAngle);  // -pAngle aligns local +y with wire direction
+
+  // Socket
+  const sW=20, sH=24;
+  X.save();
+  X.shadowColor='rgba(0,0,0,0.55)'; X.shadowBlur=9; X.shadowOffsetY=3;
+  const sg = X.createLinearGradient(-sW/2,0,sW/2,sH);
+  sg.addColorStop(0,'#504d62'); sg.addColorStop(0.5,'#5e5b72'); sg.addColorStop(1,'#2e2b3e');
+  X.fillStyle=sg;
+  X.beginPath(); X.roundRect(-sW/2,0,sW,sH,[2,2,4,4]); X.fill();
+  X.restore();
+  X.strokeStyle='rgba(0,0,0,0.4)'; X.lineWidth=1;
+  for (let iy=5; iy<sH-2; iy+=4) {
+    X.beginPath(); X.moveTo(-sW/2+1,iy); X.lineTo(sW/2-1,iy); X.stroke();
+  }
+  X.fillStyle='rgba(255,255,255,0.07)'; X.fillRect(-sW/2+1,1,4,sH-2);
+
+  // Neck
+  X.fillStyle='#1c1a2a';
+  X.beginPath();
+  X.moveTo(-sW/2,sH); X.lineTo(-sW/2-4,sH+10);
+  X.lineTo(sW/2+4,sH+10); X.lineTo(sW/2,sH);
+  X.closePath(); X.fill();
+
+  // Glass bulb
+  const gY0=sH+10, gH=78, gW=56;
+
+  if (br>0.02) { X.shadowColor=`rgba(255,170,52,${br*0.88})`; X.shadowBlur=56*br; }
+
+  X.beginPath();
+  X.moveTo(-8,gY0);
+  X.bezierCurveTo(-gW/2, gY0+10, -gW/2, gY0+38, -gW/2+10, gY0+60);
+  X.bezierCurveTo(-14, gY0+gH, 14, gY0+gH, gW/2-10, gY0+60);
+  X.bezierCurveTo(gW/2, gY0+38, gW/2, gY0+10, 8, gY0);
+  X.closePath();
+
+  const gg = X.createRadialGradient(-10,gY0+18,4, 0,gY0+38,gW*0.75);
+  if (br>0.02) {
+    gg.addColorStop(0.0, `rgba(255,252,215,${Math.min(1,br*1.05)})`);
+    gg.addColorStop(0.25,`rgba(255,215,88,${0.98*br})`);
+    gg.addColorStop(0.6, `rgba(255,152,28,${0.85*br})`);
+    gg.addColorStop(1.0, `rgba(195,75,5,${0.55*br})`);
+  } else {
+    gg.addColorStop(0,'rgba(48,44,64,0.95)'); gg.addColorStop(1,'rgba(22,20,34,0.98)');
+  }
+  X.fillStyle=gg; X.fill();
+  X.shadowBlur=0;
+  X.strokeStyle = br>0.4 ? `rgba(255,222,108,${0.55*br})` : 'rgba(56,52,78,0.9)';
+  X.lineWidth=1.5; X.stroke();
+
+  // Filament
+  if (br>0.02) { X.shadowColor=`rgba(255,225,78,${br*0.9})`; X.shadowBlur=14*br; }
+  const fr=255, fg=Math.round(148+107*br), fb=Math.round(12+68*br);
+  X.strokeStyle = br>0.02 ? `rgba(${fr},${fg},${fb},${Math.min(1,br*1.2)})` : 'rgba(72,60,46,0.8)';
+  X.lineWidth=1; X.lineCap='round';
+  const fY=gY0+14, fM=gY0+44;
+  X.beginPath(); X.moveTo(0,fY); X.lineTo(-14,fM); X.stroke();
+  X.beginPath(); X.moveTo(0,fY); X.lineTo(14,fM); X.stroke();
+  X.lineWidth=2;
+  X.beginPath(); X.moveTo(-14,fM);
+  for (let s=0; s<=9; s++) X.lineTo(-14+s*3.1, fM+(s%2===0?0:-11));
+  X.stroke();
+  X.shadowBlur=0;
+
+  // Glass shine
+  X.fillStyle=`rgba(255,255,255,${br>0.5?0.20:0.07})`;
+  X.beginPath(); X.ellipse(-16,gY0+24,5,13,-0.35,0,Math.PI*2); X.fill();
+  X.fillStyle=`rgba(255,255,255,${br>0.5?0.13:0.04})`;
+  X.beginPath(); X.arc(-13,gY0+10,3.5,0,Math.PI*2); X.fill();
+  if (br>0.3) {
+    X.fillStyle=`rgba(255,238,175,${0.32*br})`;
+    X.beginPath(); X.arc(0,gY0+gH-5,5,0,Math.PI*2); X.fill();
+  }
+  X.restore();
+}
+
+function drawHints() {
+  if (!hintAlpha || interacted && hintAlpha <= 0) return;
+  X.save();
+  X.globalAlpha = hintAlpha;
+  X.font = 'italic 13px Georgia,"Times New Roman",serif';
+  X.textAlign='center'; X.fillStyle='rgba(178,138,82,0.5)';
+  const ty = Math.min(nodes[nodes.length-1].y + 58, H - 60);
+  X.fillText('drag cord down to toggle light', ropeAnchorX, ty);
+  X.fillText('← pull', ropeAnchorX, ty+18);
+  const b = bulbAttach();
+  X.fillText('grab bulb to swing', pendAnchorX, b.y + 135);
+  X.restore();
+}
+
+// ── INIT & LOOP ─────────────────────────────────────────────────
+function init() {
+  W = C.width  = window.innerWidth;
+  H = C.height = window.innerHeight;
+  initRope(); initPendulum();
+}
+
+function loop() {
+  requestAnimationFrame(loop);
+  brightness += ((lightOn?1:0) - brightness) * 0.055;
+  flickerT += 1/60;
+  if (startFlicker > 0) startFlicker--;
+  if (interacted && hintAlpha > 0) hintAlpha = Math.max(0, hintAlpha - 0.018);
+  stepRope(); stepPendulum();
+  drawRoom(); drawLightEffect();
+  drawCeiling(); drawRope(); drawWire(); drawBulb();
+  drawHints();
+}
+
+init(); loop();
+window.addEventListener('resize', init);
+</script>
+</body>
+</html>
