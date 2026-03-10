@@ -18,9 +18,9 @@ canvas { display:block; position:fixed; top:0; left:0; }
 if (!CanvasRenderingContext2D.prototype.roundRect) {
   CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
     const a=Array.isArray(r)?r:[r,r,r,r];
-    const [tl,tr,br,bl]=a.map(v=>Math.min(+v||0,Math.min(w,h)/2));
+    const [tl,tr,br2,bl]=a.map(v=>Math.min(+v||0,Math.min(w,h)/2));
     this.moveTo(x+tl,y); this.lineTo(x+w-tr,y); this.quadraticCurveTo(x+w,y,x+w,y+tr);
-    this.lineTo(x+w,y+h-br); this.quadraticCurveTo(x+w,y+h,x+w-br,y+h);
+    this.lineTo(x+w,y+h-br2); this.quadraticCurveTo(x+w,y+h,x+w-br2,y+h);
     this.lineTo(x+bl,y+h); this.quadraticCurveTo(x,y+h,x,y+h-bl);
     this.lineTo(x,y+tl); this.quadraticCurveTo(x,y,x+tl,y); this.closePath();
   };
@@ -32,320 +32,658 @@ let W=0, H=0;
 
 let lightOn=false, brightness=0, flickerT=0, startFlicker=0;
 let hintAlpha=1, interacted=false;
+let frame=0;
 
-// ── PULL ROPE — full 2D Verlet, moves in any direction ──────────
-const NSEG = 20;
-let ropeAnchorX=0;
-let nodes=[], segLen=0;
+// ── PULL ROPE ────────────────────────────────────────────────────
+const NSEG=20;
+let ropeAnchorX=0, nodes=[], segLen=0;
 
 function initRope() {
-  ropeAnchorX = W * 0.14;
-  const restLen = H * 0.46;
-  segLen = restLen / NSEG;
-  nodes = [];
-  for (let i=0;i<=NSEG;i++) {
-    nodes.push({x:ropeAnchorX, y:i*segLen,
-                px:ropeAnchorX, py:i*segLen-0.001, pinned:i===0});
-  }
+  ropeAnchorX=W*0.14;
+  const restLen=H*0.46; segLen=restLen/NSEG; nodes=[];
+  for(let i=0;i<=NSEG;i++)
+    nodes.push({x:ropeAnchorX,y:i*segLen,px:ropeAnchorX,py:i*segLen-0.001,pinned:i===0});
 }
-
 function stepRope() {
-  // Real cord: high damping settles fast, gravity pulls it taut
-  const GRAV=0.65, DAMP=0.93;
-  for (const n of nodes) {
-    if (n.pinned) continue;
-    let vx=(n.x-n.px)*DAMP, vy=(n.y-n.py)*DAMP;
-    // speed cap — prevents explosion on fast yanks
-    const spd=Math.hypot(vx,vy);
-    if (spd>18){vx=vx/spd*18; vy=vy/spd*18;}
-    n.px=n.x; n.py=n.y;
-    n.x+=vx; n.y+=vy+GRAV;
+  const GRAV=0.65,DAMP=0.93;
+  for(const n of nodes){
+    if(n.pinned)continue;
+    let vx=(n.x-n.px)*DAMP,vy=(n.y-n.py)*DAMP;
+    const spd=Math.hypot(vx,vy); if(spd>18){vx=vx/spd*18;vy=vy/spd*18;}
+    n.px=n.x;n.py=n.y;n.x+=vx;n.y+=vy+GRAV;
   }
-  for (let it=0;it<50;it++) {
-    nodes[0].x=ropeAnchorX; nodes[0].y=0;
-    for (let i=0;i<nodes.length-1;i++) {
+  for(let it=0;it<50;it++){
+    nodes[0].x=ropeAnchorX;nodes[0].y=0;
+    for(let i=0;i<nodes.length-1;i++){
       const a=nodes[i],b=nodes[i+1];
-      const dx=b.x-a.x, dy=b.y-a.y;
-      const d=Math.hypot(dx,dy)||1e-9;
-      const c=(d-segLen)/d*0.5;
-      if(!a.pinned){a.x+=dx*c; a.y+=dy*c;}
-      if(!b.pinned){b.x-=dx*c; b.y-=dy*c;}
+      const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1e-9,c=(d-segLen)/d*0.5;
+      if(!a.pinned){a.x+=dx*c;a.y+=dy*c;}
+      if(!b.pinned){b.x-=dx*c;b.y-=dy*c;}
     }
   }
 }
 
-// ── BULB — free 2D Verlet point-mass on a rigid wire ────────────
+// ── BULB ─────────────────────────────────────────────────────────
 let pendAnchorX=0, wireLen=0;
 let bulb={x:0,y:0,px:0,py:0};
-
-function initBulb() {
-  pendAnchorX = W*0.54;
-  wireLen      = H*0.40;
+function initBulb(){
+  pendAnchorX=W*0.54; wireLen=H*0.40;
   bulb.x=pendAnchorX; bulb.y=8+wireLen;
   bulb.px=pendAnchorX; bulb.py=8+wireLen-0.001;
 }
-
-function stepBulb() {
-  if (dragTarget==='bulb') return;
-  const DAMP=0.9978, GRAV=0.30;
-  let vx=(bulb.x-bulb.px)*DAMP, vy=(bulb.y-bulb.py)*DAMP;
-  bulb.px=bulb.x; bulb.py=bulb.y;
-  bulb.x+=vx; bulb.y+=vy+GRAV;
-  // Enforce wire length (rigid rod constraint)
-  const dx=bulb.x-pendAnchorX, dy=bulb.y-8;
-  const d=Math.hypot(dx,dy)||1e-9;
-  const s=wireLen/d;
-  bulb.x=pendAnchorX+dx*s; bulb.y=8+dy*s;
+function stepBulb(){
+  if(dragTarget==='bulb')return;
+  const DAMP=0.9978,GRAV=0.30;
+  let vx=(bulb.x-bulb.px)*DAMP,vy=(bulb.y-bulb.py)*DAMP;
+  bulb.px=bulb.x;bulb.py=bulb.y;
+  bulb.x+=vx;bulb.y+=vy+GRAV;
+  const dx=bulb.x-pendAnchorX,dy=bulb.y-8,d=Math.hypot(dx,dy)||1e-9,s=wireLen/d;
+  bulb.x=pendAnchorX+dx*s;bulb.y=8+dy*s;
+}
+function wireAngle(){return Math.atan2(bulb.x-pendAnchorX,bulb.y-8);}
+// Light source point (center of glass globe in world space)
+function lightPos(){
+  const wa=wireAngle();
+  const lx=bulb.x+Math.sin(-wa)*38;
+  const ly=bulb.y+Math.cos(-wa)*38;
+  return {x:lx,y:ly};
 }
 
-// Angle of wire from vertical (used for rotating bulb & cone)
-function wireAngle() {
-  return Math.atan2(bulb.x-pendAnchorX, bulb.y-8);
+// ── DUST MOTES ───────────────────────────────────────────────────
+const DUST_COUNT=220;
+let dustParticles=[];
+function initDust(){
+  dustParticles=[];
+  for(let i=0;i<DUST_COUNT;i++){
+    dustParticles.push({
+      x:Math.random()*W,
+      y:Math.random()*H,
+      vx:(Math.random()-0.5)*0.18,
+      vy:(Math.random()-0.5)*0.12-0.04,
+      size:Math.random()*1.8+0.4,
+      alpha:Math.random(),
+      drift:Math.random()*Math.PI*2,
+      driftSpd:0.008+Math.random()*0.012,
+    });
+  }
+}
+function stepDust(){
+  for(const p of dustParticles){
+    p.drift+=p.driftSpd;
+    p.x+=p.vx+Math.sin(p.drift)*0.15;
+    p.y+=p.vy+Math.cos(p.drift*0.7)*0.08;
+    if(p.x<0)p.x=W; if(p.x>W)p.x=0;
+    if(p.y<0)p.y=H; if(p.y>H)p.y=0;
+  }
 }
 
-// ── INPUT ────────────────────────────────────────────────────────
-let mx=0,my=0,pmx=0,pmy=0;
-let dragTarget=null, ropePullY0=0, maxRopePull=0;
+// Point-in-cone test: is world point (px,py) inside the light cone?
+// Cone tip at lightPos, direction = wire direction downward, half-angle ~28 deg
+function inCone(px,py,lx,ly,coneAngle){
+  const wa=wireAngle();
+  // Cone axis direction in world space: pointing "down" from the bulb tip
+  const axX=Math.sin(-wa),axY=Math.cos(-wa);
+  // wait — cone points away from wire (downward from the globe tip)
+  const dx=px-lx,dy=py-ly;
+  const d=Math.hypot(dx,dy);
+  if(d<1)return true;
+  const dot=(dx*axX+dy*axY)/d;// cos of angle between ray and axis
+  return dot>Math.cos(coneAngle);
+}
 
-function hitTarget(cx,cy) {
+function drawDust(){
+  if(brightness<0.01)return;
+  let fl=startFlicker>0?(Math.random()>0.35?1:0.06):0.93+Math.sin(flickerT*18.3)*0.035;
+  const br=brightness*fl;
+  const {x:lx,y:ly}=lightPos();
+  const HALF_ANGLE=0.52; // ~30 degrees
+
+  X.save();
+  for(const p of dustParticles){
+    if(!inCone(p.x,p.y,lx,ly,HALF_ANGLE))continue;
+    // Fade by distance from axis
+    const wa=wireAngle();
+    const axX=Math.sin(-wa),axY=Math.cos(-wa);
+    const dx=p.x-lx,dy=p.y-ly;
+    const d=Math.hypot(dx,dy)||1;
+    const dot=(dx*axX+dy*axY)/d;
+    const distFade=Math.max(0,1-d/(H*0.72));
+    const angleFade=Math.max(0,(dot-Math.cos(HALF_ANGLE))/(1-Math.cos(HALF_ANGLE)));
+    const a=p.alpha*distFade*angleFade*br*0.85;
+    if(a<0.01)continue;
+    X.globalAlpha=a;
+    X.fillStyle='rgba(255,228,140,1)';
+    X.beginPath();
+    X.arc(p.x,p.y,p.size,0,Math.PI*2);
+    X.fill();
+    // Tiny glow around each mote
+    if(a>0.15){
+      const g=X.createRadialGradient(p.x,p.y,0,p.x,p.y,p.size*4);
+      g.addColorStop(0,`rgba(255,210,100,${a*0.5})`);
+      g.addColorStop(1,'rgba(0,0,0,0)');
+      X.fillStyle=g;
+      X.beginPath();
+      X.arc(p.x,p.y,p.size*4,0,Math.PI*2);
+      X.fill();
+    }
+  }
+  X.globalAlpha=1;
+  X.restore();
+}
+
+// ── MOTHS ────────────────────────────────────────────────────────
+let moths=[];
+function initMoths(){
+  moths=[];
+  for(let i=0;i<4;i++){
+    moths.push({
+      x:Math.random()*W,
+      y:H*0.3+Math.random()*H*0.5,
+      vx:(Math.random()-0.5)*2,
+      vy:(Math.random()-0.5)*2,
+      angle:Math.random()*Math.PI*2,
+      wingPhase:Math.random()*Math.PI*2,
+      orbitAngle:Math.random()*Math.PI*2,
+      orbitRadius:30+Math.random()*80,
+      orbitSpd:(0.025+Math.random()*0.03)*(Math.random()<0.5?1:-1),
+      attracted:false,
+      attractTimer:0,
+    });
+  }
+}
+function stepMoths(){
+  const {x:lx,y:ly}=lightPos();
+  for(const m of moths){
+    m.wingPhase+=0.28;
+    if(!lightOn){
+      // Wander randomly when light off
+      m.attracted=false;
+      m.vx+=(Math.random()-0.5)*0.18;
+      m.vy+=(Math.random()-0.5)*0.18;
+      m.vx*=0.95;m.vy*=0.95;
+      m.x+=m.vx;m.y+=m.vy;
+    } else {
+      // When light on, orbit around the bulb with jitter
+      m.orbitAngle+=m.orbitSpd;
+      m.orbitRadius=Math.max(28,m.orbitRadius+(Math.random()-0.5)*1.2);
+      const tx=lx+Math.cos(m.orbitAngle)*m.orbitRadius;
+      const ty=ly+Math.sin(m.orbitAngle)*m.orbitRadius*0.6;
+      m.vx+=(tx-m.x)*0.04;
+      m.vy+=(ty-m.y)*0.04;
+      m.vx*=0.88;m.vy*=0.88;
+      m.vx+=(Math.random()-0.5)*0.9;
+      m.vy+=(Math.random()-0.5)*0.9;
+      m.x+=m.vx;m.y+=m.vy;
+    }
+    m.angle=Math.atan2(m.vy,m.vx);
+    // Keep on screen loosely
+    m.x=Math.max(10,Math.min(W-10,m.x));
+    m.y=Math.max(70,Math.min(H*0.88,m.y));
+  }
+}
+function drawMoths(){
+  const visible=brightness>0.05;
+  for(const m of moths){
+    if(!visible&&!lightOn)continue;
+    const alpha=(lightOn?0.70:0.25)*Math.min(1,brightness*3+0.1);
+    if(alpha<0.05)continue;
+    X.save();
+    X.translate(m.x,m.y);
+    X.rotate(m.angle+Math.PI/2);
+    X.globalAlpha=alpha;
+    // Wings
+    const wFlap=Math.sin(m.wingPhase)*0.45;
+    for(const side of[-1,1]){
+      X.save();
+      X.scale(side,1);
+      X.rotate(wFlap*side);
+      // Forewing
+      X.fillStyle='rgba(140,115,72,0.82)';
+      X.beginPath();
+      X.ellipse(4,0,9,5,0.3,0,Math.PI*2);
+      X.fill();
+      // Hindwing
+      X.fillStyle='rgba(110,88,52,0.65)';
+      X.beginPath();
+      X.ellipse(3,4,6,3.5,-0.2,0,Math.PI*2);
+      X.fill();
+      // Wing vein
+      X.strokeStyle='rgba(80,58,28,0.4)';
+      X.lineWidth=0.5;
+      X.beginPath();
+      X.moveTo(0,0);X.lineTo(10,0);
+      X.stroke();
+      X.restore();
+    }
+    // Body
+    X.fillStyle='rgba(80,60,30,0.9)';
+    X.beginPath();X.ellipse(0,0,2.5,6,0,0,Math.PI*2);X.fill();
+    // Antennae
+    X.strokeStyle='rgba(100,80,45,0.7)';X.lineWidth=0.8;
+    for(const side of[-1,1]){
+      X.beginPath();X.moveTo(side*1.5,-6);X.quadraticCurveTo(side*8,-14,side*10,-12);X.stroke();
+    }
+    X.globalAlpha=1;
+    X.restore();
+  }
+}
+
+// ── ROOM OBJECTS ─────────────────────────────────────────────────
+let chair=null, sideTable=null;
+function initObjects(){
+  const fY=H*0.883;
+  const cx=W*0.73;
+  const sW=Math.min(W*0.096,102);
+  const legH=Math.min(H*0.205,178);
+  const backH=Math.min(H*0.175,150);
+  const lW=8;
+  const seatY=fY-legH;
+  chair={cx,fY,sW,legH,backH,lW,seatY,
+    shadowVerts:[
+      {x:cx-sW/2+lW, y:seatY-backH+8},
+      {x:cx+sW/2-lW, y:seatY-backH+8},
+      {x:cx+sW/2,    y:seatY},
+      {x:cx+sW/2,    y:fY},
+      {x:cx-sW/2,    y:fY},
+      {x:cx-sW/2,    y:seatY},
+    ]};
+  const tx=W*0.20;
+  const tH=Math.min(H*0.155,136);
+  const tW=Math.min(W*0.075,78);
+  const plW=15;
+  sideTable={tx,fY,tH,tW,plW,topY:fY-tH,
+    shadowVerts:[
+      {x:tx-tW/2,y:fY-tH},
+      {x:tx+tW/2,y:fY-tH},
+      {x:tx+plW/2,y:fY},
+      {x:tx-plW/2,y:fY},
+    ]};
+}
+
+function projectFloorX(lx,ly,vx,vy,fY){
+  const denom=vy-ly; if(denom<1)return null;
+  const t=(fY-ly)/denom; if(t<0)return null;
+  return lx+t*(vx-lx);
+}
+function getShadowRange(lx,ly,verts){
+  const fY=H*0.883;
+  let minX=Infinity,maxX=-Infinity;
+  for(const v of verts){
+    if(Math.abs(v.y-fY)<4){minX=Math.min(minX,v.x);maxX=Math.max(maxX,v.x);}
+    const px=projectFloorX(lx,ly,v.x,v.y,fY);
+    if(px!==null){minX=Math.min(minX,px);maxX=Math.max(maxX,px);}
+  }
+  return{minX,maxX};
+}
+function drawFloorShadow(lx,ly,verts,br){
+  const{minX,maxX}=getShadowRange(lx,ly,verts);
+  if(!isFinite(minX)||maxX-minX<2)return;
+  const fY=H*0.883;
+  const w=maxX-minX;
+  const pad=Math.min(22,w*0.14);
+  X.save();
+  const cg=X.createLinearGradient(minX-pad,0,maxX+pad,0);
+  cg.addColorStop(0,'rgba(0,0,0,0)');
+  cg.addColorStop(pad/(w+pad*2),`rgba(0,0,0,${0.60*br})`);
+  cg.addColorStop(1-pad/(w+pad*2),`rgba(0,0,0,${0.60*br})`);
+  cg.addColorStop(1,'rgba(0,0,0,0)');
+  X.fillStyle=cg;X.fillRect(minX-pad,fY-5,w+pad*2,11);
+  const sP=Math.min(55,w*0.55);
+  const sg=X.createLinearGradient(minX-sP,0,maxX+sP,0);
+  sg.addColorStop(0,'rgba(0,0,0,0)');
+  sg.addColorStop(sP/(w+sP*2),`rgba(0,0,0,${0.20*br})`);
+  sg.addColorStop(1-sP/(w+sP*2),'rgba(0,0,0,0)');
+  sg.addColorStop(1,'rgba(0,0,0,0)');
+  X.fillStyle=sg;X.fillRect(minX-sP,fY-4,w+sP*2,9);
+  X.restore();
+}
+
+// Wall shadow — projects silhouette onto the back wall (y=60..H*0.88 strip, behind objects)
+function drawWallShadow(lx,ly,verts,br){
+  if(br<0.02)return;
+  const wallX=W; // back wall is at high X for chair side
+  // For each pair of vertices, project onto wall strips
+  // Simplified: find top-most and bottom-most shadow extent on right wall
+  // Only do this for the chair (left wall for table)
+  X.save();
+  let minY=Infinity,maxY=-Infinity;
+  for(const v of verts){
+    // project onto right wall x=W*0.92
+    const wX=W*0.91;
+    const denom=v.x-lx;
+    if(Math.abs(denom)<1)continue;
+    const t=(wX-lx)/denom;
+    if(t<0||t>8)continue;
+    const projY=ly+t*(v.y-ly);
+    if(projY>60&&projY<H*0.88){minY=Math.min(minY,projY);maxY=Math.max(maxY,projY);}
+  }
+  if(isFinite(minY)&&maxY-minY>5){
+    const h=maxY-minY;
+    const pad=Math.min(18,h*0.15);
+    const wg=X.createLinearGradient(0,minY-pad,0,maxY+pad);
+    wg.addColorStop(0,'rgba(0,0,0,0)');
+    wg.addColorStop(pad/(h+pad*2),`rgba(0,0,0,${0.38*br})`);
+    wg.addColorStop(1-pad/(h+pad*2),`rgba(0,0,0,${0.38*br})`);
+    wg.addColorStop(1,'rgba(0,0,0,0)');
+    X.fillStyle=wg;X.fillRect(W*0.84,minY-pad,W*0.16,h+pad*2);
+  }
+  // Left wall for table
+  let minY2=Infinity,maxY2=-Infinity;
+  const tableVerts=sideTable?sideTable.shadowVerts:[];
+  for(const v of tableVerts){
+    const wX=W*0.08;
+    const denom=v.x-lx;
+    if(Math.abs(denom)<1)continue;
+    const t=(wX-lx)/denom;
+    if(t<0||t>10)continue;
+    const projY=ly+t*(v.y-ly);
+    if(projY>60&&projY<H*0.88){minY2=Math.min(minY2,projY);maxY2=Math.max(maxY2,projY);}
+  }
+  if(isFinite(minY2)&&maxY2-minY2>5){
+    const h=maxY2-minY2;
+    const pad=Math.min(18,h*0.15);
+    const wg=X.createLinearGradient(0,minY2-pad,0,maxY2+pad);
+    wg.addColorStop(0,'rgba(0,0,0,0)');
+    wg.addColorStop(pad/(h+pad*2),`rgba(0,0,0,${0.32*br})`);
+    wg.addColorStop(1-pad/(h+pad*2),`rgba(0,0,0,${0.32*br})`);
+    wg.addColorStop(1,'rgba(0,0,0,0)');
+    X.fillStyle=wg;X.fillRect(0,minY2-pad,W*0.16,h+pad*2);
+  }
+  X.restore();
+}
+
+function drawObjects(){
+  if(!chair||!sideTable)return;
+  const{cx,fY,sW,legH,backH,lW,seatY}=chair;
+  const{tx,tH,tW,plW,topY}=sideTable;
+  // AO chair
+  const aoG=X.createLinearGradient(cx-sW/2,fY-6,cx+sW/2,fY);
+  aoG.addColorStop(0,'rgba(0,0,0,0)');aoG.addColorStop(0.3,'rgba(0,0,0,0.35)');
+  aoG.addColorStop(0.7,'rgba(0,0,0,0.35)');aoG.addColorStop(1,'rgba(0,0,0,0)');
+  X.fillStyle=aoG;X.fillRect(cx-sW/2,fY-6,sW,8);
+  // Back legs
+  X.fillStyle='#1c1008';
+  X.fillRect(cx-sW/2+lW+4,seatY-backH,lW,legH+backH);
+  X.fillRect(cx+sW/2-lW*2-4,seatY-backH,lW,legH+backH);
+  // Front legs
+  X.fillStyle='#28180a';
+  X.fillRect(cx-sW/2+2,seatY,lW,legH);X.fillRect(cx+sW/2-lW-2,seatY,lW,legH);
+  // Back slats
+  for(let i=0;i<3;i++){
+    const sy=seatY-backH*0.18-i*backH*0.23;
+    X.fillStyle=`rgba(52,30,12,${0.9-i*0.1})`;
+    X.fillRect(cx-sW/2+lW*2+2,sy,sW-lW*4-4,7);
+  }
+  // Top back rail
+  const bG=X.createLinearGradient(cx-sW/2+lW,seatY-backH,cx+sW/2-lW,seatY-backH+12);
+  bG.addColorStop(0,'#4a2c12');bG.addColorStop(1,'#2e1a08');
+  X.fillStyle=bG;X.fillRect(cx-sW/2+lW,seatY-backH,sW-lW*2,12);
+  // Seat
+  const seatG=X.createLinearGradient(cx,seatY-14,cx,seatY+2);
+  seatG.addColorStop(0,'#5e3818');seatG.addColorStop(1,'#3a2008');
+  X.fillStyle=seatG;X.fillRect(cx-sW/2,seatY-14,sW,16);
+  if(brightness>0.04){
+    X.fillStyle=`rgba(255,188,68,${brightness*0.10})`;X.fillRect(cx-sW/2,seatY-14,sW,3);
+    X.fillStyle=`rgba(255,180,60,${brightness*0.06})`;X.fillRect(cx-sW/2+lW,seatY-backH,sW-lW*2,3);
+  }
+  // AO table
+  const aoG2=X.createLinearGradient(tx-tW/2,fY-5,tx+tW/2,fY);
+  aoG2.addColorStop(0,'rgba(0,0,0,0)');aoG2.addColorStop(0.3,'rgba(0,0,0,0.32)');
+  aoG2.addColorStop(0.7,'rgba(0,0,0,0.32)');aoG2.addColorStop(1,'rgba(0,0,0,0)');
+  X.fillStyle=aoG2;X.fillRect(tx-tW/2,fY-5,tW,7);
+  X.fillStyle='#1e1208';X.fillRect(tx-plW/2,topY+8,plW,tH-6);
+  X.fillRect(tx-plW*1.1,fY-6,plW*2.2,6);
+  const tG=X.createLinearGradient(tx-tW/2,topY,tx+tW/2,topY+10);
+  tG.addColorStop(0,'#4e3010');tG.addColorStop(0.4,'#603c14');tG.addColorStop(1,'#3a2008');
+  X.fillStyle=tG;X.fillRect(tx-tW/2,topY,tW,10);
+  X.fillStyle='rgba(0,0,0,0.28)';X.fillRect(tx-tW/2,topY+9,tW,4);
+  if(brightness>0.04){
+    X.fillStyle=`rgba(255,188,68,${brightness*0.12})`;X.fillRect(tx-tW/2,topY,tW,3);
+  }
+}
+
+// ── INPUT ─────────────────────────────────────────────────────────
+let mx=0,my=0,pmx=0,pmy=0,dragTarget=null,ropePullY0=0,maxRopePull=0;
+function hitTarget(cx,cy){
   const t=nodes[nodes.length-1];
-  if (Math.hypot(t.x-cx,t.y-cy)<44) return 'rope';
-  if (Math.hypot(bulb.x-cx,bulb.y-cy)<68) return 'bulb';
+  if(Math.hypot(t.x-cx,t.y-cy)<44)return 'rope';
+  if(Math.hypot(bulb.x-cx,bulb.y-cy)<68)return 'bulb';
   return null;
 }
-
-function pointerDown(cx,cy) {
-  pmx=mx=cx; pmy=my=cy;
-  const t=hitTarget(cx,cy);
-  if (!t) return;
-  dragTarget=t; interacted=true; C.style.cursor='grabbing';
-  if (t==='rope'){ropePullY0=nodes[nodes.length-1].y; maxRopePull=0;}
+function pointerDown(cx,cy){
+  pmx=mx=cx;pmy=my=cy;
+  const t=hitTarget(cx,cy);if(!t)return;
+  dragTarget=t;interacted=true;C.style.cursor='grabbing';
+  if(t==='rope'){ropePullY0=nodes[nodes.length-1].y;maxRopePull=0;}
 }
-
-function pointerMove(cx,cy) {
-  pmx=mx; pmy=my; mx=cx; my=cy;
-  if (dragTarget==='rope') {
+function pointerMove(cx,cy){
+  pmx=mx;pmy=my;mx=cx;my=cy;
+  if(dragTarget==='rope'){
     const n=nodes[nodes.length-1];
-    // Free 2D movement — no clamping
-    n.px=n.x-(cx-pmx)*0.55;
-    n.py=n.y-(cy-pmy)*0.55;
-    n.x=cx; n.y=cy;
-    maxRopePull=Math.max(maxRopePull, cy-ropePullY0);
+    n.px=n.x-(cx-pmx)*0.55;n.py=n.y-(cy-pmy)*0.55;
+    n.x=cx;n.y=cy;
+    maxRopePull=Math.max(maxRopePull,cy-ropePullY0);
   }
-  if (dragTarget==='bulb') {
-    // Constrain drag to wire sphere — bulb stays at wireLen from anchor
-    const dx=cx-pendAnchorX, dy=cy-8;
-    const d=Math.hypot(dx,dy)||1e-9;
-    const s=wireLen/d;
-    const nx=pendAnchorX+dx*s, ny=8+dy*s;
-    // Carry velocity from mouse movement
-    bulb.px=bulb.x-(nx-bulb.x)*0.4;
-    bulb.py=bulb.y-(ny-bulb.y)*0.4;
-    bulb.x=nx; bulb.y=ny;
+  if(dragTarget==='bulb'){
+    const dx=cx-pendAnchorX,dy=cy-8,d=Math.hypot(dx,dy)||1e-9,s=wireLen/d;
+    const nx=pendAnchorX+dx*s,ny=8+dy*s;
+    bulb.px=bulb.x-(nx-bulb.x)*0.4;bulb.py=bulb.y-(ny-bulb.y)*0.4;
+    bulb.x=nx;bulb.y=ny;
   }
-  if (!dragTarget) C.style.cursor=hitTarget(cx,cy)?'grab':'default';
+  if(!dragTarget)C.style.cursor=hitTarget(cx,cy)?'grab':'default';
 }
-
-function pointerUp() {
-  if (dragTarget==='rope' && maxRopePull>82) {
-    lightOn=!lightOn;
-    if (lightOn) startFlicker=55;
-  }
-  dragTarget=null;
-  C.style.cursor=hitTarget(mx,my)?'grab':'default';
+function pointerUp(){
+  if(dragTarget==='rope'&&maxRopePull>82){lightOn=!lightOn;if(lightOn)startFlicker=55;}
+  dragTarget=null;C.style.cursor=hitTarget(mx,my)?'grab':'default';
 }
-
-C.addEventListener('mousedown', e=>pointerDown(e.clientX,e.clientY));
-C.addEventListener('mousemove', e=>pointerMove(e.clientX,e.clientY));
-C.addEventListener('mouseup',   ()=>pointerUp());
+C.addEventListener('mousedown',e=>pointerDown(e.clientX,e.clientY));
+C.addEventListener('mousemove',e=>pointerMove(e.clientX,e.clientY));
+C.addEventListener('mouseup',()=>pointerUp());
 C.addEventListener('mouseleave',()=>pointerUp());
 C.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];pointerDown(t.clientX,t.clientY);},{passive:false});
-C.addEventListener('touchmove', e=>{e.preventDefault();const t=e.touches[0];pointerMove(t.clientX,t.clientY);},{passive:false});
-C.addEventListener('touchend',  e=>{e.preventDefault();pointerUp();},{passive:false});
+C.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];pointerMove(t.clientX,t.clientY);},{passive:false});
+C.addEventListener('touchend',e=>{e.preventDefault();pointerUp();},{passive:false});
 
-// ── DRAWING ──────────────────────────────────────────────────────
-
-function drawRoom() {
-  X.fillStyle='#0b0906'; X.fillRect(0,0,W,H);
-  // Wood grain panels — full height
-  for (let i=0;i<W;i+=52) {
+// ── DRAW ROOM ─────────────────────────────────────────────────────
+function drawRoom(){
+  X.fillStyle='#0b0906';X.fillRect(0,0,W,H);
+  // Wall wood grain
+  for(let i=0;i<W;i+=52){
     const wobX=Math.sin(i*0.018)*8;
-    X.strokeStyle='rgba(88,50,14,0.058)'; X.lineWidth=26;
-    X.beginPath(); X.moveTo(i+wobX,62); X.lineTo(i+wobX+16,H); X.stroke();
+    X.strokeStyle='rgba(88,50,14,0.055)';X.lineWidth=26;
+    X.beginPath();X.moveTo(i+wobX,62);X.lineTo(i+wobX+16,H);X.stroke();
   }
-  for (let i=0;i<W;i+=11) {
-    X.strokeStyle='rgba(52,28,6,0.04)'; X.lineWidth=1;
-    X.beginPath(); X.moveTo(i,62); X.lineTo(i+4,H); X.stroke();
+  for(let i=0;i<W;i+=11){
+    X.strokeStyle='rgba(52,28,6,0.04)';X.lineWidth=1;
+    X.beginPath();X.moveTo(i,62);X.lineTo(i+4,H);X.stroke();
+  }
+  // ── FLOORBOARDS ────────────────────────────────────────────────
+  const floorTop=H*0.883;
+  const boardH=H*0.117;
+  // Base floor color
+  X.fillStyle='#100d09';X.fillRect(0,floorTop,W,boardH);
+  // Draw individual planks
+  const plankW=Math.min(W/9,90);
+  const plankH=Math.min(boardH*0.38,22);
+  for(let row=0;row<3;row++){
+    const pY=floorTop+row*plankH;
+    const offset=row%2===0?0:plankW*0.5;
+    for(let col=-1;col<W/plankW+2;col++){
+      const pX=col*plankW-offset;
+      // Plank face: perspective foreshortening — planks narrower near top
+      const perspScale=0.6+0.4*(row/3);
+      const pH=plankH*perspScale;
+      const pTop=pY+(plankH-pH);
+      // Wood grain on plank
+      const shade=Math.sin(col*2.3+row*1.7)*0.03;
+      X.fillStyle=`rgb(${Math.round(26+shade*60)},${Math.round(18+shade*40)},${Math.round(8+shade*20)})`;
+      X.fillRect(pX,pTop,plankW-2,pH);
+      // Plank edge highlight (top)
+      X.fillStyle='rgba(80,55,20,0.18)';
+      X.fillRect(pX,pTop,plankW-2,1);
+      // Gap between planks
+      X.fillStyle='rgba(0,0,0,0.55)';
+      X.fillRect(pX-1,pTop,2,pH);
+      // Subtle grain lines
+      X.strokeStyle=`rgba(8,5,2,0.12)`;X.lineWidth=1;
+      for(let g=1;g<4;g++){
+        X.beginPath();
+        X.moveTo(pX+g*(plankW/4),pTop);
+        X.lineTo(pX+g*(plankW/4)+2,pTop+pH);
+        X.stroke();
+      }
+      // Light reflection on floor planks (when bulb on)
+      if(brightness>0.02){
+        const{x:lx,y:ly}=lightPos();
+        const distToPlank=Math.hypot(pX+plankW/2-lx,pTop+pH/2-ly);
+        const refl=Math.max(0,1-distToPlank/(H*0.55))*brightness*0.14;
+        if(refl>0.005){
+          X.fillStyle=`rgba(255,185,60,${refl})`;
+          X.fillRect(pX,pTop,plankW-2,pH);
+        }
+      }
+    }
   }
   // Baseboard
-  X.fillStyle='#0f0c09'; X.fillRect(0,H*0.88,W,H*0.12);
-  X.fillStyle='#1c1710'; X.fillRect(0,H*0.88,W,3);
-  X.fillStyle='#141008'; X.fillRect(0,H*0.88+3,W,2);
-  X.fillStyle='#0a0805'; X.fillRect(0,H*0.91,W,H*0.09);
+  X.fillStyle='#1c1710';X.fillRect(0,floorTop,W,3);
   // Vignette
   const vig=X.createRadialGradient(W/2,H*0.45,H*0.08,W/2,H*0.45,H*0.95);
-  vig.addColorStop(0,'rgba(0,0,0,0)'); vig.addColorStop(1,'rgba(0,0,0,0.88)');
-  X.fillStyle=vig; X.fillRect(0,0,W,H);
-  X.fillStyle='rgba(0,0,0,0.2)';
-  X.fillRect(0,0,W*0.16,H); X.fillRect(W*0.84,0,W*0.16,H);
+  vig.addColorStop(0,'rgba(0,0,0,0)');vig.addColorStop(1,'rgba(0,0,0,0.88)');
+  X.fillStyle=vig;X.fillRect(0,0,W,H);
+  X.fillStyle='rgba(0,0,0,0.20)';
+  X.fillRect(0,0,W*0.16,H);X.fillRect(W*0.84,0,W*0.16,H);
 }
 
-function drawLightAmbient() {
-  if (brightness<0.005) return;
+function drawLightAmbient(){
+  if(brightness<0.005)return;
   let fl=startFlicker>0?(Math.random()>0.35?1:0.06):0.93+Math.sin(flickerT*18.3)*0.035+Math.sin(flickerT*41.7)*0.025;
   const br=brightness*fl;
-  // Wide ambient bloom around bulb
-  const cx=bulb.x, cy=bulb.y+30;
-  const bloom=X.createRadialGradient(cx,cy,0,cx,cy,H*0.85);
+  const bx=bulb.x,by=bulb.y+30;
+  const bloom=X.createRadialGradient(bx,by,0,bx,by,H*0.85);
   bloom.addColorStop(0.00,`rgba(255,195,68,${0.38*br})`);
   bloom.addColorStop(0.13,`rgba(228,138,28,${0.24*br})`);
   bloom.addColorStop(0.44,`rgba(165,78,8,${0.10*br})`);
   bloom.addColorStop(1.00,'rgba(0,0,0,0)');
-  X.fillStyle=bloom; X.fillRect(0,0,W,H);
-  // Ceiling halo
-  const ch=X.createRadialGradient(bulb.x,12,0,bulb.x,12,W*0.4);
-  ch.addColorStop(0,`rgba(255,198,75,${0.16*br})`);
-  ch.addColorStop(1,'rgba(0,0,0,0)');
-  X.fillStyle=ch; X.fillRect(0,0,W,120);
-  // Floor pool shifts with bulb
-  const fp=X.createRadialGradient(bulb.x,H*0.90,0,bulb.x,H*0.90,W*0.35);
-  fp.addColorStop(0,`rgba(255,175,55,${0.10*br})`);
-  fp.addColorStop(1,'rgba(0,0,0,0)');
-  X.fillStyle=fp; X.fillRect(0,H*0.82,W,H*0.18);
+  X.fillStyle=bloom;X.fillRect(0,0,W,H);
+  const ch=X.createRadialGradient(bx,12,0,bx,12,W*0.4);
+  ch.addColorStop(0,`rgba(255,198,75,${0.16*br})`);ch.addColorStop(1,'rgba(0,0,0,0)');
+  X.fillStyle=ch;X.fillRect(0,0,W,120);
+  const fp=X.createRadialGradient(bx,H*0.90,0,bx,H*0.90,W*0.35);
+  fp.addColorStop(0,`rgba(255,175,55,${0.12*br})`);fp.addColorStop(1,'rgba(0,0,0,0)');
+  X.fillStyle=fp;X.fillRect(0,H*0.82,W,H*0.18);
 }
 
-function drawCeiling() {
-  X.fillStyle='#141210'; X.fillRect(0,0,W,60);
-  X.fillStyle='#1c1814'; X.fillRect(0,52,W,10);
-  X.fillStyle='#222018'; X.fillRect(0,58,W,3);
+function drawAllShadows(){
+  if(brightness<0.01||!chair||!sideTable)return;
+  let fl=startFlicker>0?(Math.random()>0.35?1:0.06):0.93+Math.sin(flickerT*18.3)*0.035;
+  const br=brightness*fl;
+  const{x:lx,y:ly}=lightPos();
+  drawFloorShadow(lx,ly,chair.shadowVerts,br);
+  drawFloorShadow(lx,ly,sideTable.shadowVerts,br);
+  drawWallShadow(lx,ly,chair.shadowVerts,br);
+}
+
+function drawCeiling(){
+  X.fillStyle='#141210';X.fillRect(0,0,W,60);
+  X.fillStyle='#1c1814';X.fillRect(0,52,W,10);
+  X.fillStyle='#222018';X.fillRect(0,58,W,3);
   const sh=X.createLinearGradient(0,62,0,124);
-  sh.addColorStop(0,'rgba(0,0,0,0.65)'); sh.addColorStop(1,'rgba(0,0,0,0)');
-  X.fillStyle=sh; X.fillRect(0,62,W,62);
-  // Ceiling rose (bulb wire mount)
+  sh.addColorStop(0,'rgba(0,0,0,0.65)');sh.addColorStop(1,'rgba(0,0,0,0)');
+  X.fillStyle=sh;X.fillRect(0,62,W,62);
   X.save();
-  X.shadowColor='rgba(0,0,0,0.55)'; X.shadowBlur=8; X.shadowOffsetY=3;
+  X.shadowColor='rgba(0,0,0,0.55)';X.shadowBlur=8;X.shadowOffsetY=3;
   const rg=X.createRadialGradient(pendAnchorX-3,3,0,pendAnchorX,6,20);
-  rg.addColorStop(0,'#302c28'); rg.addColorStop(1,'#1a1712');
-  X.fillStyle=rg;
-  X.beginPath(); X.ellipse(pendAnchorX,6,18,7,0,0,Math.PI*2); X.fill();
-  X.strokeStyle='#3e3a34'; X.lineWidth=1; X.stroke();
+  rg.addColorStop(0,'#302c28');rg.addColorStop(1,'#1a1712');
+  X.fillStyle=rg;X.beginPath();X.ellipse(pendAnchorX,6,18,7,0,0,Math.PI*2);X.fill();
+  X.strokeStyle='#3e3a34';X.lineWidth=1;X.stroke();
   X.restore();
-  // Rope bracket
   X.save();
   X.fillStyle='#1e1a16';
-  X.beginPath(); X.roundRect(ropeAnchorX-10,0,20,23,[0,0,6,6]); X.fill();
-  X.strokeStyle='#2c2820'; X.lineWidth=1; X.stroke();
+  X.beginPath();X.roundRect(ropeAnchorX-10,0,20,23,[0,0,6,6]);X.fill();
+  X.strokeStyle='#2c2820';X.lineWidth=1;X.stroke();
   X.restore();
 }
 
-function drawRope() {
-  if (nodes.length<2) return;
-  X.save(); X.lineCap='round'; X.lineJoin='round';
-  for (let i=0;i<nodes.length-1;i++) {
+function drawRope(){
+  if(nodes.length<2)return;
+  X.save();X.lineCap='round';X.lineJoin='round';
+  for(let i=0;i<nodes.length-1;i++){
     const a=nodes[i],b=nodes[i+1];
-    X.strokeStyle='rgba(0,0,0,0.45)'; X.lineWidth=9;
-    X.beginPath(); X.moveTo(a.x+2,a.y+3); X.lineTo(b.x+2,b.y+3); X.stroke();
+    X.strokeStyle='rgba(0,0,0,0.45)';X.lineWidth=9;
+    X.beginPath();X.moveTo(a.x+2,a.y+3);X.lineTo(b.x+2,b.y+3);X.stroke();
   }
-  for (let s=0;s<3;s++) {
-    for (let i=0;i<nodes.length-1;i++) {
+  for(let s=0;s<3;s++){
+    for(let i=0;i<nodes.length-1;i++){
       const a=nodes[i],b=nodes[i+1];
-      const ta=Math.sin(i*1.4+s*2.094)*2.2, tb=Math.sin((i+1)*1.4+s*2.094)*2.2;
+      const ta=Math.sin(i*1.4+s*2.094)*2.2,tb=Math.sin((i+1)*1.4+s*2.094)*2.2;
       const L=15+s*7+Math.sin(i*0.65)*4;
-      X.strokeStyle=`hsl(28,48%,${L}%)`; X.lineWidth=s===1?5.5:3;
-      X.beginPath(); X.moveTo(a.x+ta,a.y); X.lineTo(b.x+tb,b.y); X.stroke();
+      X.strokeStyle=`hsl(28,48%,${L}%)`;X.lineWidth=s===1?5.5:3;
+      X.beginPath();X.moveTo(a.x+ta,a.y);X.lineTo(b.x+tb,b.y);X.stroke();
     }
   }
-  for (let i=0;i<nodes.length-1;i+=2) {
+  for(let i=0;i<nodes.length-1;i+=2){
     const a=nodes[i],b=nodes[i+1];
-    X.strokeStyle='rgba(215,172,105,0.18)'; X.lineWidth=1.5;
-    X.beginPath(); X.moveTo(a.x-2,a.y); X.lineTo(b.x-2,b.y); X.stroke();
+    X.strokeStyle='rgba(215,172,105,0.18)';X.lineWidth=1.5;
+    X.beginPath();X.moveTo(a.x-2,a.y);X.lineTo(b.x-2,b.y);X.stroke();
   }
   const t=nodes[nodes.length-1];
-  X.shadowColor='rgba(0,0,0,0.72)'; X.shadowBlur=14; X.shadowOffsetY=5;
+  X.shadowColor='rgba(0,0,0,0.72)';X.shadowBlur=14;X.shadowOffsetY=5;
   const kg=X.createRadialGradient(t.x-4,t.y-4,1,t.x,t.y+3,15);
-  kg.addColorStop(0,'#a06838'); kg.addColorStop(0.55,'#724520'); kg.addColorStop(1,'#2e1508');
-  X.fillStyle=kg; X.beginPath(); X.ellipse(t.x,t.y+3,12,16,0,0,Math.PI*2); X.fill();
-  X.shadowBlur=0; X.shadowOffsetY=0;
-  X.strokeStyle='rgba(0,0,0,0.5)'; X.lineWidth=1.5;
-  X.beginPath(); X.ellipse(t.x,t.y+3,12,5,0,0,Math.PI*2); X.stroke();
-  for (let i=0;i<12;i++) {
-    const ang=(i/12)*Math.PI*2;
-    const rx=Math.cos(ang)*9;
+  kg.addColorStop(0,'#a06838');kg.addColorStop(0.55,'#724520');kg.addColorStop(1,'#2e1508');
+  X.fillStyle=kg;X.beginPath();X.ellipse(t.x,t.y+3,12,16,0,0,Math.PI*2);X.fill();
+  X.shadowBlur=0;X.shadowOffsetY=0;
+  X.strokeStyle='rgba(0,0,0,0.5)';X.lineWidth=1.5;
+  X.beginPath();X.ellipse(t.x,t.y+3,12,5,0,0,Math.PI*2);X.stroke();
+  for(let i=0;i<12;i++){
+    const ang=(i/12)*Math.PI*2,rx=Math.cos(ang)*9;
     const wave=Math.sin(Date.now()*0.0025+i*0.82)*2.5;
-    X.strokeStyle=`hsl(28,50%,${20+(i%4)*7}%)`; X.lineWidth=1.5;
-    X.beginPath(); X.moveTo(t.x+rx*0.5,t.y+18); X.lineTo(t.x+rx+wave,t.y+32); X.stroke();
+    X.strokeStyle=`hsl(28,50%,${20+(i%4)*7}%)`;X.lineWidth=1.5;
+    X.beginPath();X.moveTo(t.x+rx*0.5,t.y+18);X.lineTo(t.x+rx+wave,t.y+32);X.stroke();
   }
   X.restore();
 }
 
-function drawWire() {
-  X.save(); X.lineCap='round';
-  X.strokeStyle='rgba(0,0,0,0.38)'; X.lineWidth=4;
-  X.beginPath(); X.moveTo(pendAnchorX+1.5,10); X.lineTo(bulb.x+1.5,bulb.y+2); X.stroke();
-  X.strokeStyle='#28253c'; X.lineWidth=2.5;
-  X.beginPath(); X.moveTo(pendAnchorX,10); X.lineTo(bulb.x,bulb.y); X.stroke();
-  X.strokeStyle='#38354e'; X.lineWidth=1;
-  X.beginPath(); X.moveTo(pendAnchorX,10); X.lineTo(bulb.x,bulb.y); X.stroke();
+function drawWire(){
+  X.save();X.lineCap='round';
+  X.strokeStyle='rgba(0,0,0,0.38)';X.lineWidth=4;
+  X.beginPath();X.moveTo(pendAnchorX+1.5,10);X.lineTo(bulb.x+1.5,bulb.y+2);X.stroke();
+  X.strokeStyle='#28253c';X.lineWidth=2.5;
+  X.beginPath();X.moveTo(pendAnchorX,10);X.lineTo(bulb.x,bulb.y);X.stroke();
+  X.strokeStyle='#38354e';X.lineWidth=1;
+  X.beginPath();X.moveTo(pendAnchorX,10);X.lineTo(bulb.x,bulb.y);X.stroke();
   X.restore();
 }
 
-function drawBulb() {
+function drawBulb(){
   let fl=startFlicker>0?(Math.random()>0.35?1:0.05):0.93+Math.sin(flickerT*18.3)*0.035+Math.sin(flickerT*41.7)*0.025;
   const br=brightness*fl;
-
-  // Angle of wire from vertical — used for rotating the whole bulb
   const wa=wireAngle();
-
-  X.save();
-  X.translate(bulb.x, bulb.y);
-  // Rotate so local +y always points AWAY from the anchor along the wire
-  // canvas rotate(θ): local +y = (-sinθ, cosθ) in world
-  // We want local +y = (sin wa, cos wa) → θ = -wa
-  X.rotate(-wa);
-
-  // ── Light cone — drawn here in local bulb space so it always points down-from-bulb ──
-  if (br>0.005) {
-    const sH=24, gY0=sH+10, gH=78;
-    const coneStart=gY0+gH-4; // tip of glass in local space
-    const coneLen=H*0.78;
-    const coneBase=coneLen*0.58*br;
+  X.save();X.translate(bulb.x,bulb.y);X.rotate(-wa);
+  if(br>0.005){
+    const sH=24,gY0=sH+10,gH=78;
+    const coneStart=gY0+gH-4,coneLen=H*0.78,coneBase=coneLen*0.58*br;
     const cg=X.createLinearGradient(0,coneStart,0,coneStart+coneLen);
     cg.addColorStop(0.00,`rgba(255,210,80,${0.32*br})`);
     cg.addColorStop(0.35,`rgba(210,128,28,${0.14*br})`);
     cg.addColorStop(0.80,`rgba(155,72,8,${0.05*br})`);
     cg.addColorStop(1.00,'rgba(0,0,0,0)');
-    X.fillStyle=cg;
-    X.beginPath();
-    X.moveTo(-5, coneStart);
-    X.lineTo(-coneBase/2, coneStart+coneLen);
-    X.lineTo( coneBase/2, coneStart+coneLen);
-    X.lineTo( 5, coneStart);
-    X.closePath(); X.fill();
+    X.fillStyle=cg;X.beginPath();
+    X.moveTo(-5,coneStart);X.lineTo(-coneBase/2,coneStart+coneLen);
+    X.lineTo(coneBase/2,coneStart+coneLen);X.lineTo(5,coneStart);X.closePath();X.fill();
   }
-
-  // ── Socket ──
-  const sW=20, sH=24;
-  X.save();
-  X.shadowColor='rgba(0,0,0,0.58)'; X.shadowBlur=10; X.shadowOffsetY=3;
+  const sW=20,sH=24;
+  X.save();X.shadowColor='rgba(0,0,0,0.58)';X.shadowBlur=10;X.shadowOffsetY=3;
   const sg=X.createLinearGradient(-sW/2,0,sW/2,sH);
-  sg.addColorStop(0,'#504d62'); sg.addColorStop(0.5,'#5e5b72'); sg.addColorStop(1,'#2e2b3e');
-  X.fillStyle=sg;
-  X.beginPath(); X.roundRect(-sW/2,0,sW,sH,[2,2,4,4]); X.fill();
+  sg.addColorStop(0,'#504d62');sg.addColorStop(0.5,'#5e5b72');sg.addColorStop(1,'#2e2b3e');
+  X.fillStyle=sg;X.beginPath();X.roundRect(-sW/2,0,sW,sH,[2,2,4,4]);X.fill();
   X.restore();
-  X.strokeStyle='rgba(0,0,0,0.42)'; X.lineWidth=1;
-  for (let iy=5;iy<sH-2;iy+=4){X.beginPath();X.moveTo(-sW/2+1,iy);X.lineTo(sW/2-1,iy);X.stroke();}
-  X.fillStyle='rgba(255,255,255,0.07)'; X.fillRect(-sW/2+1,1,4,sH-2);
-
-  // ── Neck ──
+  X.strokeStyle='rgba(0,0,0,0.42)';X.lineWidth=1;
+  for(let iy=5;iy<sH-2;iy+=4){X.beginPath();X.moveTo(-sW/2+1,iy);X.lineTo(sW/2-1,iy);X.stroke();}
+  X.fillStyle='rgba(255,255,255,0.07)';X.fillRect(-sW/2+1,1,4,sH-2);
   X.fillStyle='#1c1a2a';
-  X.beginPath();
-  X.moveTo(-sW/2,sH); X.lineTo(-sW/2-4,sH+10);
-  X.lineTo(sW/2+4,sH+10); X.lineTo(sW/2,sH);
-  X.closePath(); X.fill();
-
-  // ── Glass bulb (pear, pointing DOWN) ──
-  const gY0=sH+10, gH=78, gW=56;
-  if (br>0.02){X.shadowColor=`rgba(255,170,50,${br*0.88})`;X.shadowBlur=58*br;}
+  X.beginPath();X.moveTo(-sW/2,sH);X.lineTo(-sW/2-4,sH+10);X.lineTo(sW/2+4,sH+10);X.lineTo(sW/2,sH);X.closePath();X.fill();
+  const gY0=sH+10,gH=78,gW=56;
+  if(br>0.02){X.shadowColor=`rgba(255,170,50,${br*0.88})`;X.shadowBlur=58*br;}
   X.beginPath();
   X.moveTo(-8,gY0);
   X.bezierCurveTo(-gW/2,gY0+10,-gW/2,gY0+38,-gW/2+10,gY0+60);
@@ -353,48 +691,38 @@ function drawBulb() {
   X.bezierCurveTo(gW/2,gY0+38,gW/2,gY0+10,8,gY0);
   X.closePath();
   const gg=X.createRadialGradient(-10,gY0+18,4,0,gY0+38,gW*0.75);
-  if (br>0.02){
+  if(br>0.02){
     gg.addColorStop(0.00,`rgba(255,252,215,${Math.min(1,br*1.05)})`);
     gg.addColorStop(0.25,`rgba(255,215,88,${0.98*br})`);
     gg.addColorStop(0.60,`rgba(255,152,28,${0.85*br})`);
     gg.addColorStop(1.00,`rgba(195,75,5,${0.55*br})`);
-  } else {
-    gg.addColorStop(0,'rgba(48,44,64,0.95)'); gg.addColorStop(1,'rgba(22,20,34,0.98)');
-  }
-  X.fillStyle=gg; X.fill();
-  X.shadowBlur=0;
+  }else{gg.addColorStop(0,'rgba(48,44,64,0.95)');gg.addColorStop(1,'rgba(22,20,34,0.98)');}
+  X.fillStyle=gg;X.fill();X.shadowBlur=0;
   X.strokeStyle=br>0.4?`rgba(255,222,108,${0.55*br})`:'rgba(56,52,78,0.9)';
-  X.lineWidth=1.5; X.stroke();
-
-  // ── Filament ──
-  if (br>0.02){X.shadowColor=`rgba(255,225,78,${br*0.92})`;X.shadowBlur=15*br;}
-  const fg2=Math.round(148+107*br), fb2=Math.round(12+68*br);
+  X.lineWidth=1.5;X.stroke();
+  if(br>0.02){X.shadowColor=`rgba(255,225,78,${br*0.92})`;X.shadowBlur=15*br;}
+  const fg2=Math.round(148+107*br),fb2=Math.round(12+68*br);
   X.strokeStyle=br>0.02?`rgba(255,${fg2},${fb2},${Math.min(1,br*1.2)})`:'rgba(72,60,46,0.8)';
-  X.lineWidth=1; X.lineCap='round';
-  const fY=gY0+14, fM=gY0+44;
-  X.beginPath(); X.moveTo(0,fY); X.lineTo(-14,fM); X.stroke();
-  X.beginPath(); X.moveTo(0,fY); X.lineTo(14,fM); X.stroke();
-  X.lineWidth=2; X.beginPath(); X.moveTo(-14,fM);
-  for (let s=0;s<=9;s++) X.lineTo(-14+s*3.1,fM+(s%2===0?0:-11));
-  X.stroke(); X.shadowBlur=0;
-
-  // ── Glass highlights ──
+  X.lineWidth=1;X.lineCap='round';
+  const fY2=gY0+14,fM=gY0+44;
+  X.beginPath();X.moveTo(0,fY2);X.lineTo(-14,fM);X.stroke();
+  X.beginPath();X.moveTo(0,fY2);X.lineTo(14,fM);X.stroke();
+  X.lineWidth=2;X.beginPath();X.moveTo(-14,fM);
+  for(let s=0;s<=9;s++)X.lineTo(-14+s*3.1,fM+(s%2===0?0:-11));
+  X.stroke();X.shadowBlur=0;
   X.fillStyle=`rgba(255,255,255,${br>0.5?0.20:0.07})`;
-  X.beginPath(); X.ellipse(-16,gY0+24,5,13,-0.35,0,Math.PI*2); X.fill();
+  X.beginPath();X.ellipse(-16,gY0+24,5,13,-0.35,0,Math.PI*2);X.fill();
   X.fillStyle=`rgba(255,255,255,${br>0.5?0.13:0.04})`;
-  X.beginPath(); X.arc(-13,gY0+10,3.5,0,Math.PI*2); X.fill();
-  if (br>0.3){
-    X.fillStyle=`rgba(255,238,175,${0.32*br})`;
-    X.beginPath(); X.arc(0,gY0+gH-5,5,0,Math.PI*2); X.fill();
-  }
+  X.beginPath();X.arc(-13,gY0+10,3.5,0,Math.PI*2);X.fill();
+  if(br>0.3){X.fillStyle=`rgba(255,238,175,${0.32*br})`;X.beginPath();X.arc(0,gY0+gH-5,5,0,Math.PI*2);X.fill();}
   X.restore();
 }
 
-function drawHints() {
-  if (hintAlpha<=0) return;
-  X.save(); X.globalAlpha=hintAlpha;
+function drawHints(){
+  if(hintAlpha<=0)return;
+  X.save();X.globalAlpha=hintAlpha;
   X.font='italic 13px Georgia,"Times New Roman",serif';
-  X.textAlign='center'; X.fillStyle='rgba(178,140,82,0.55)';
+  X.textAlign='center';X.fillStyle='rgba(178,140,82,0.55)';
   const ty=Math.min(nodes[nodes.length-1].y+58,H-90);
   X.fillText('drag cord in any direction',ropeAnchorX,ty);
   X.fillText('pull down to toggle',ropeAnchorX,ty+18);
@@ -403,24 +731,31 @@ function drawHints() {
 }
 
 // ── INIT & LOOP ──────────────────────────────────────────────────
-function init() {
-  W=C.width=window.innerWidth; H=C.height=window.innerHeight;
-  initRope(); initBulb();
+function init(){
+  W=C.width=window.innerWidth;H=C.height=window.innerHeight;
+  initRope();initBulb();initObjects();initDust();initMoths();
 }
 
-function loop() {
+function loop(){
   requestAnimationFrame(loop);
+  frame++;
   brightness+=((lightOn?1:0)-brightness)*0.055;
   flickerT+=1/60;
-  if (startFlicker>0) startFlicker--;
-  if (interacted&&hintAlpha>0) hintAlpha=Math.max(0,hintAlpha-0.018);
-  stepRope(); stepBulb();
-  drawRoom(); drawLightAmbient();
-  drawCeiling(); drawRope(); drawWire(); drawBulb();
+  if(startFlicker>0)startFlicker--;
+  if(interacted&&hintAlpha>0)hintAlpha=Math.max(0,hintAlpha-0.018);
+  stepRope();stepBulb();stepDust();stepMoths();
+  drawRoom();
+  drawLightAmbient();
+  drawAllShadows();
+  drawObjects();
+  drawDust();
+  drawCeiling();
+  drawRope();drawWire();drawBulb();
+  drawMoths();
   drawHints();
 }
 
-init(); loop();
+init();loop();
 window.addEventListener('resize',init);
 </script>
 </body>
