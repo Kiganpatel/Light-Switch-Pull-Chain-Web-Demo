@@ -442,6 +442,74 @@ function drawObjects(){
   }
 }
 
+// ── AUDIO ─────────────────────────────────────────────────────────
+let audioCtx=null, humNode=null, humGain=null;
+function getAudio(){
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  if(audioCtx.state==='suspended') audioCtx.resume();
+  return audioCtx;
+}
+function soundClick(){
+  const ctx=getAudio();
+  const buf=ctx.createBuffer(1,ctx.sampleRate*0.06,ctx.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++){const t=i/ctx.sampleRate;d[i]=(Math.random()*2-1)*Math.exp(-t*120)*0.9;}
+  const src=ctx.createBufferSource(); src.buffer=buf;
+  const hp=ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=800;
+  const g=ctx.createGain(); g.gain.value=0.6;
+  src.connect(hp); hp.connect(g); g.connect(ctx.destination); src.start();
+}
+function soundBulbOn(){
+  const ctx=getAudio();
+  const buf=ctx.createBuffer(1,ctx.sampleRate*0.22,ctx.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++){const t=i/ctx.sampleRate;d[i]=(Math.random()*2-1)*Math.exp(-t*18)*0.7;}
+  const src=ctx.createBufferSource(); src.buffer=buf;
+  const lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=3200;
+  const g=ctx.createGain(); g.gain.value=0.45;
+  src.connect(lp); lp.connect(g); g.connect(ctx.destination); src.start();
+  startHum();
+}
+function soundBulbOff(){
+  const ctx=getAudio();
+  const buf=ctx.createBuffer(1,ctx.sampleRate*0.08,ctx.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++){const t=i/ctx.sampleRate;d[i]=(Math.random()*2-1)*Math.exp(-t*60)*0.5;}
+  const src=ctx.createBufferSource(); src.buffer=buf;
+  const g=ctx.createGain(); g.gain.value=0.4;
+  src.connect(g); g.connect(ctx.destination); src.start();
+  stopHum();
+}
+function startHum(){
+  const ctx=getAudio(); if(humNode) return;
+  humGain=ctx.createGain(); humGain.gain.setValueAtTime(0,ctx.currentTime);
+  humGain.gain.linearRampToValueAtTime(0.04,ctx.currentTime+0.4);
+  humGain.connect(ctx.destination);
+  humNode=ctx.createOscillator(); humNode.type='sawtooth'; humNode.frequency.value=120;
+  const lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=600;
+  humNode.connect(lp); lp.connect(humGain); humNode.start();
+}
+function stopHum(){
+  if(!humNode||!humGain) return;
+  const ctx=getAudio();
+  humGain.gain.linearRampToValueAtTime(0,ctx.currentTime+0.35);
+  const h=humNode; setTimeout(()=>{try{h.stop();}catch(e){}},400);
+  humNode=null; humGain=null;
+}
+function soundRopeSwish(speed){
+  if(speed<2.5) return;
+  const ctx=getAudio();
+  const dur=Math.min(0.12+speed*0.008,0.28);
+  const buf=ctx.createBuffer(1,ctx.sampleRate*dur,ctx.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++){const t=i/ctx.sampleRate;d[i]=(Math.random()*2-1)*Math.pow(1-t/dur,1.5)*0.5;}
+  const src=ctx.createBufferSource(); src.buffer=buf;
+  const bp=ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=1800+speed*60; bp.Q.value=0.8;
+  const g=ctx.createGain(); g.gain.value=Math.min(0.18,speed*0.014);
+  src.connect(bp); bp.connect(g); g.connect(ctx.destination); src.start();
+}
+let lastSwishFrame=0;
+
 // ── INPUT ─────────────────────────────────────────────────────────
 let mx=0,my=0,pmx=0,pmy=0,dragTarget=null,ropePullY0=0,maxRopePull=0;
 function hitTarget(cx,cy){
@@ -473,7 +541,12 @@ function pointerMove(cx,cy){
   if(!dragTarget)C.style.cursor=hitTarget(cx,cy)?'grab':'default';
 }
 function pointerUp(){
-  if(dragTarget==='rope'&&maxRopePull>82){lightOn=!lightOn;if(lightOn)startFlicker=55;}
+  if(dragTarget==='rope'&&maxRopePull>82){
+    soundClick();
+    lightOn=!lightOn;
+    if(lightOn){startFlicker=55; setTimeout(soundBulbOn,35);}
+    else soundBulbOff();
+  }
   dragTarget=null;C.style.cursor=hitTarget(mx,my)?'grab':'default';
 }
 C.addEventListener('mousedown',e=>pointerDown(e.clientX,e.clientY));
@@ -744,6 +817,12 @@ function loop(){
   if(startFlicker>0)startFlicker--;
   if(interacted&&hintAlpha>0)hintAlpha=Math.max(0,hintAlpha-0.018);
   stepRope();stepBulb();stepDust();stepMoths();
+  // Rope swish — fire when tassel is moving fast, throttled to every 18 frames
+  if(dragTarget==='rope'&&frame-lastSwishFrame>18){
+    const t=nodes[nodes.length-1];
+    const spd=Math.hypot(t.x-t.px,t.y-t.py)*60;
+    if(spd>2.5){soundRopeSwish(spd);lastSwishFrame=frame;}
+  }
   drawRoom();
   drawLightAmbient();
   drawAllShadows();
