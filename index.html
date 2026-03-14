@@ -2,11 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Pull the Light</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-html,body { width:100%; height:100%; overflow:hidden; background:#080604; }
+html,body { width:100%; height:100%; overflow:hidden; background:#080604;
+  touch-action:none; -webkit-tap-highlight-color:transparent;
+  -webkit-touch-callout:none; user-select:none; }
 canvas { display:block; position:fixed; top:0; left:0; }
 </style>
 </head>
@@ -90,16 +92,34 @@ function stepPlot(){
   }
 }
 
+// Draw text wrapped to maxWidth, returns total height used
+function wrapText(text, x, y, maxWidth, lineHeight){
+  const words = text.split(' ');
+  let line = '';
+  let cy = y;
+  for(let i=0;i<words.length;i++){
+    const test = line + (line?' ':'') + words[i];
+    if(X.measureText(test).width > maxWidth && line){
+      X.fillText(line, x, cy);
+      line = words[i];
+      cy += lineHeight;
+    } else {
+      line = test;
+    }
+  }
+  if(line) X.fillText(line, x, cy);
+  return cy - y + lineHeight;
+}
+
 function drawPlotLine(){
   if(plotState==='idle'||!plotLine) return;
   X.save();
   X.globalAlpha=plotAlpha*0.88;
   X.textAlign='center';
-  X.font='italic 17px Georgia,"Times New Roman",serif';
-  // Subtle text shadow for legibility over both dark and lit backgrounds
+  X.font=`italic ${fs(17)}px Georgia,"Times New Roman",serif`;
   X.shadowColor='rgba(0,0,0,0.85)'; X.shadowBlur=18;
   X.fillStyle='rgba(210,190,155,1)';
-  X.fillText(plotLine, W/2, H*0.78);
+  wrapText(plotLine, W/2, H*0.78, W*0.78, fs(24));
   X.restore();
 }
 
@@ -120,6 +140,11 @@ function stepRope() {
     let vx=(n.x-n.px)*DAMP,vy=(n.y-n.py)*DAMP;
     const spd=Math.hypot(vx,vy); if(spd>18){vx=vx/spd*18;vy=vy/spd*18;}
     n.px=n.x;n.py=n.y;n.x+=vx;n.y+=vy+GRAV;
+    // Keep rope nodes on screen
+    if(n.x<0){n.x=0;n.px=n.x+Math.abs(vx)*0.3;}
+    if(n.x>W){n.x=W;n.px=n.x-Math.abs(vx)*0.3;}
+    if(n.y<0){n.y=0;n.py=n.y+Math.abs(vy)*0.3;}
+    if(n.y>H*0.95){n.y=H*0.95;n.py=n.y-Math.abs(vy)*0.3;}
   }
   for(let it=0;it<50;it++){
     nodes[0].x=ropeAnchorX;nodes[0].y=0;
@@ -149,6 +174,15 @@ function stepBulb(){
   bulb.x+=vx;bulb.y+=vy+GRAV;
   const dx=bulb.x-pendAnchorX,dy=bulb.y-8,d=Math.hypot(dx,dy)||1e-9,s=wireLen/d;
   bulb.x=pendAnchorX+dx*s;bulb.y=8+dy*s;
+  // Clamp bulb above floor
+  const fY=H*0.82;
+  if(bulb.y>fY){bulb.y=fY;bulb.py=bulb.y+Math.abs(vy)*0.4;}
+  // Clamp within horizontal bounds with bounce
+  if(bulb.x<20){bulb.x=20;bulb.px=bulb.x+Math.abs(vx)*0.5;}
+  if(bulb.x>W-20){bulb.x=W-20;bulb.px=bulb.x-Math.abs(vx)*0.5;}
+  // Re-enforce wire length after clamping
+  const dx2=bulb.x-pendAnchorX,dy2=bulb.y-8,d2=Math.hypot(dx2,dy2)||1e-9,s2=wireLen/d2;
+  bulb.x=pendAnchorX+dx2*s2;bulb.y=8+dy2*s2;
   // Shatter if swinging too fast
   const spd=Math.hypot(vx,vy);
   if(spd>SHATTER_SPEED) shatterBulb();
@@ -680,8 +714,8 @@ function soundShatter(){
 let mx=0,my=0,pmx=0,pmy=0,dragTarget=null,ropePullY0=0,ropePullX0=0,maxRopePull=0;
 function hitTarget(cx,cy){
   const t=nodes[nodes.length-1];
-  if(Math.hypot(t.x-cx,t.y-cy)<44)return 'rope';
-  if(!bulbShattered&&Math.hypot(bulb.x-cx,bulb.y-cy)<68)return 'bulb';
+  if(Math.hypot(t.x-cx,t.y-cy)<HIT_ROPE)return 'rope';
+  if(!bulbShattered&&Math.hypot(bulb.x-cx,bulb.y-cy)<HIT_BULB)return 'bulb';
   return null;
 }
 function pointerDown(cx,cy){
@@ -731,13 +765,27 @@ function pointerUp(){
   }
   dragTarget=null;C.style.cursor=hitTarget(mx,my)?'grab':'default';
 }
-C.addEventListener('mousedown',e=>pointerDown(e.clientX,e.clientY));
-C.addEventListener('mousemove',e=>pointerMove(e.clientX,e.clientY));
-C.addEventListener('mouseup',()=>pointerUp());
+C.addEventListener('mousedown', e=>pointerDown(e.clientX,e.clientY));
+C.addEventListener('mousemove', e=>pointerMove(e.clientX,e.clientY));
+C.addEventListener('mouseup',   ()=>pointerUp());
 C.addEventListener('mouseleave',()=>pointerUp());
-C.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];pointerDown(t.clientX,t.clientY);},{passive:false});
-C.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];pointerMove(t.clientX,t.clientY);},{passive:false});
-C.addEventListener('touchend',e=>{e.preventDefault();pointerUp();},{passive:false});
+C.addEventListener('touchstart', e=>{e.preventDefault();const t=e.touches[0];pointerDown(t.clientX,t.clientY);},{passive:false});
+C.addEventListener('touchmove',  e=>{e.preventDefault();const t=e.touches[0];pointerMove(t.clientX,t.clientY);},{passive:false});
+C.addEventListener('touchend',   e=>{e.preventDefault();pointerUp();},{passive:false});
+C.addEventListener('touchcancel',e=>{e.preventDefault();pointerUp();},{passive:false});
+
+// Only truly reinit on orientation/size change — not on iOS address-bar scroll flicker
+let _lastW=0,_lastH=0;
+function onResize(){
+  const nw=window.innerWidth, nh=getViewH();
+  if(Math.abs(nw-_lastW)>4||Math.abs(nh-_lastH)>80){
+    _lastW=nw;_lastH=nh;
+    init();
+  }
+}
+if(window.visualViewport) window.visualViewport.addEventListener('resize',onResize);
+window.addEventListener('resize',onResize);
+window.addEventListener('orientationchange',()=>setTimeout(init,120));
 
 // ── DRAW ROOM ─────────────────────────────────────────────────────
 function drawRoom(){
@@ -1019,9 +1067,10 @@ function drawStoryOverlay(){
       } else { l.alpha=0; }
       if(l.alpha>0.01){
         X.save();X.globalAlpha=l.alpha;
-        X.font='italic 18px Georgia,"Times New Roman",serif';
+        X.font=`italic ${fs(18)}px Georgia,"Times New Roman",serif`;
         X.textAlign='center';X.fillStyle='rgba(190,175,148,1)';
-        X.fillText(l.text,W/2,H/2);
+        X.shadowColor='rgba(0,0,0,0.9)';X.shadowBlur=16;
+        wrapText(l.text, W/2, H/2, W*0.78, fs(26));
         X.restore();
       }
     }
@@ -1038,7 +1087,7 @@ function drawStoryOverlay(){
     if(shatterTimer>30&&shatterTimer<SHATTER_DARK-20){
       const dots=shatterTimer<80?'.':shatterTimer<130?'..':'...';
       X.globalAlpha=Math.min(1,(shatterTimer-30)/20)*Math.min(1,(SHATTER_DARK-20-shatterTimer)/20);
-      X.font='italic 22px Georgia,"Times New Roman",serif';
+      X.font=`italic ${fs(22)}px Georgia,"Times New Roman",serif`;
       X.textAlign='center';X.fillStyle='rgba(170,155,125,1)';
       X.fillText(dots,W/2,H/2);
     }
@@ -1121,18 +1170,36 @@ function drawProps(){
 function drawHints(){
   if(hintAlpha<=0)return;
   X.save();X.globalAlpha=hintAlpha;
-  X.font='italic 13px Georgia,"Times New Roman",serif';
+  X.font=`italic ${fs(13)}px Georgia,"Times New Roman",serif`;
   X.textAlign='center';X.fillStyle='rgba(178,140,82,0.55)';
-  const ty=Math.min(nodes[nodes.length-1].y+58,H-90);
-  X.fillText('pull cord to toggle',ropeAnchorX,ty);
-  X.fillText('grab & swing the bulb',pendAnchorX,Math.min(bulb.y+140,H-60));
-  X.fillText('(swing too hard and it breaks)',pendAnchorX,Math.min(bulb.y+160,H-40));
+  X.shadowColor='rgba(0,0,0,0.7)';X.shadowBlur=8;
+  const maxW=Math.min(W*0.38,180);
+  const ty=Math.min(nodes[nodes.length-1].y+58,H-110);
+  wrapText('pull cord to toggle',ropeAnchorX,ty,maxW,fs(18));
+  const by=Math.min(bulb.y+130,H-70);
+  wrapText('grab & swing — swing too hard and it breaks',pendAnchorX,by,maxW,fs(18));
   X.restore();
 }
 
-// ── INIT & LOOP ──────────────────────────────────────────────────
+// ── MOBILE / SCENE HELPERS ────────────────────────────────────────
+const IS_TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+const HIT_ROPE = IS_TOUCH ? 64 : 44;
+const HIT_BULB = IS_TOUCH ? 90 : 68;
+function fs(px){ return Math.round(px * Math.min(1, Math.max(0.72, W/900))); }
+
+function getViewH(){
+  return (window.visualViewport ? window.visualViewport.height : window.innerHeight);
+}
+
 function init(){
-  W=C.width=window.innerWidth;H=C.height=window.innerHeight;
+  W = window.innerWidth;
+  H = getViewH();
+  C.width  = W;
+  C.height = H;
+  // Pin CSS size to match — prevents any browser rescaling
+  C.style.width  = W + 'px';
+  C.style.height = H + 'px';
+  _lastW = W; _lastH = H;
   initRope();initBulb();initObjects();initDust();initMoths();
 }
 
@@ -1144,11 +1211,8 @@ function loop(){
   // ── Story phase transitions ──
   if(storyPhase==='intro'){
     introTimer++;
-    if(introTimer>=INTRO_HOLD+INTRO_FADE+20){
-      storyPhase='idle';
-    }
-    // Block interaction during hard intro darkness
-    if(introTimer<INTRO_HOLD) {
+    if(introTimer>=INTRO_HOLD+INTRO_FADE+20) storyPhase='idle';
+    if(introTimer<INTRO_HOLD){
       drawRoom(); drawMoonlight(); drawLightAmbient();
       drawCeiling(); drawStoryOverlay();
       return;
@@ -1167,14 +1231,10 @@ function loop(){
 
   if(storyPhase==='replacing'){
     replacingProgress+=0.012;
-    if(replacingProgress>=1){
-      storyPhase='playing';
-    }
+    if(replacingProgress>=1) storyPhase='playing';
   }
 
-  if((storyPhase==='idle'||storyPhase==='playing')&&interacted){
-    storyPhase='playing';
-  }
+  if((storyPhase==='idle'||storyPhase==='playing')&&interacted) storyPhase='playing';
 
   brightness+=((lightOn?1:0)-brightness)*0.055;
   if(startFlicker>0)startFlicker--;
@@ -1206,7 +1266,7 @@ function loop(){
 }
 
 init();loop();
-window.addEventListener('resize',init);
+
 </script>
 </body>
 </html>
